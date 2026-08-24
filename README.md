@@ -892,6 +892,7 @@ hookrelay/
 ├── docker-compose.yml       postgres, redis, api, worker, receiver, frontend
 ├── README.md                this file
 ├── EXPLANATION.md           design walkthrough + interview questions
+├── GO_LIVE.md               step-by-step deploy walkthrough
 ├── PRODUCTION.md            ordered $0 production-readiness checklist
 ├── DEPLOYMENT.md            hosting, infra and CD reference
 ├── backend/                 Go 1.24+
@@ -926,6 +927,9 @@ hookrelay/
 - **[EXPLANATION.md](EXPLANATION.md)** — every component and design decision in
   plain language, the alternatives considered and rejected, and the ten hardest
   questions this architecture invites, answered properly.
+- **[GO_LIVE.md](GO_LIVE.md)** — a click-by-click walkthrough that ends with
+  HookRelay on a public HTTPS URL you own, for $0. Start here if you want it
+  *running*.
 - **[PRODUCTION.md](PRODUCTION.md)** — the ordered checklist for taking this to
   production **for $0**: the blockers (SSRF, secrets, TLS) with working code, then
   rate limiting, metrics and alerts, growth control, and backups. Start here if

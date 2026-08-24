@@ -103,6 +103,12 @@ services:
   frontend:
     build:
       context: ./frontend
+      # NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+      # the API URL has to be passed as a build arg. Setting it only as a runtime
+      # environment variable leaves the default baked in and the browser calls
+      # localhost instead of the real API.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
     environment:
       # The browser talks to the API directly, so this must be host-reachable.
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}

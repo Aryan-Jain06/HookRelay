@@ -1,5 +1,9 @@
 # PRODUCTION — making HookRelay production-ready, for free
 
+> **Want the guided version?** [GO_LIVE.md](GO_LIVE.md) walks you through an
+> actual deployment step by step, console clicks included. This file is the
+> reference: what to do, why, and in what order.
+
 A concrete, ordered checklist. Every item says **what to do**, **why it matters**,
 and where code is needed, **the code**. Nothing here costs money.
 
