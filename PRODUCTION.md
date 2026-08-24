@@ -352,6 +352,12 @@ never wrong: **API first** (it migrates), then workers, then frontend.
 
 ## Stage 2 — Don't get taken down
 
+> **Both limiters now ship in the code** (`backend/internal/handlers/ratelimit.go`),
+> on by default: 200 req/s per tenant and 5/s per address on `/auth/login` and
+> `/auth/register`. Tune with `RATE_LIMIT_PER_TENANT`, `RATE_LIMIT_TENANT_BURST`,
+> `RATE_LIMIT_PER_IP`, `RATE_LIMIT_IP_BURST`; zero disables. The sections below
+> remain as the rationale and for the Redis-backed exact-limit upgrade.
+
 ### 2.1 Rate-limit ingestion 🟠
 
 **Why:** `POST /events` has no per-tenant limit. One buggy loop in a customer's
@@ -494,6 +500,11 @@ unless you have untrusted tenants.
 
 ## Stage 3 — See what's happening
 
+> **`/metrics` now ships in the code**, on its own port (`METRICS_ADDR`, default
+> `:9100`) for both API and worker, with `monitoring/prometheus.yml` and
+> `monitoring/alerts.yml` carrying the four alerts below. What is left for you is
+> running Prometheus and pointing it at them.
+
 ### 3.1 Add a `/metrics` endpoint 🟠
 
 **Why:** there is no metrics endpoint today. You cannot operate what you cannot
@@ -615,6 +626,11 @@ Logs are already structured JSON on stdout via `log/slog`, so anything works:
 ---
 
 ## Stage 4 — Don't run out of disk
+
+> **Both sweeps now ship in the worker**, no cron needed: stream trimming
+> (`STREAM_MAX_LEN`, `STREAM_TRIM_INTERVAL`) and attempt retention
+> (`ATTEMPT_RETENTION`, `RETENTION_INTERVAL`). Zero disables either. The cron
+> recipes below are kept for anyone running the sweeps externally.
 
 Both of these are unbounded growth today. Neither is urgent on day one; both
 become outages eventually.
@@ -814,12 +830,14 @@ Copy this into your issue tracker.
 
 **Abuse protection**
 
-- [ ] Per-tenant rate limit on the authenticated group
-- [ ] IP rate limit on `/auth/login` and `/auth/register`
+- [x] Per-tenant rate limit on the authenticated group (ships on by default)
+- [x] IP rate limit on `/auth/login` and `/auth/register` (ships on by default)
+- [ ] Limits tuned for your expected traffic
 
 **Observability**
 
-- [ ] `/metrics` exposed on an internal port and scraped
+- [x] `/metrics` exposed on an internal port (ships on `:9100`)
+- [ ] Prometheus running and scraping it
 - [ ] Alert: dead letters increasing
 - [ ] Alert: stream depth rising
 - [ ] Alert: pending entries high
@@ -828,8 +846,9 @@ Copy this into your issue tracker.
 
 **Growth control**
 
-- [ ] Stream trimming scheduled
-- [ ] `delivery_attempts` retention job scheduled
+- [x] Stream trimming scheduled (runs in the worker)
+- [x] `delivery_attempts` retention scheduled (runs in the worker)
+- [ ] Retention window matches your needs (default 30 days)
 
 **Recovery**
 

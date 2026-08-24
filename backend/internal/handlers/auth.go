@@ -85,3 +85,31 @@ func isUserInputError(err error) bool {
 	return strings.Contains(msg, "invalid email address") ||
 		strings.Contains(msg, "password must be at least")
 }
+
+// RotateAPIKey issues a new API key and invalidates the old one.
+//
+// It deliberately requires the dashboard JWT rather than accepting the API key
+// itself: if a key leaks, whoever holds it must not be able to rotate it and
+// lock the real owner out. Requiring the password-derived credential means
+// rotation always needs something the attacker does not have.
+func (h *AuthHandler) RotateAPIKey(w http.ResponseWriter, r *http.Request) {
+	if CredentialFrom(r.Context()) != CredentialToken {
+		httpx.Error(w, r, httpx.Forbidden("rotating an API key requires a dashboard token; sign in at /auth/login and use that token"))
+		return
+	}
+	tenant := TenantFrom(r.Context())
+	key, err := h.auth.RotateAPIKey(r.Context(), tenant.ID)
+	if err != nil {
+		if errors.Is(err, repos.ErrNotFound) {
+			httpx.Error(w, r, httpx.NotFound("tenant not found"))
+			return
+		}
+		httpx.Error(w, r, httpx.Internal(err))
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"api_key":        key,
+		"api_key_prefix": services.APIKeyDisplayPrefix(key),
+		"warning":        "the previous API key stopped working immediately; this value is shown only once",
+	})
+}

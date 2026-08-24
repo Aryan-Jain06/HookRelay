@@ -890,7 +890,9 @@ request, before recording the result — and the delivery still completes.
 
 ```
 hookrelay/
-├── docker-compose.yml       postgres, redis, api, worker, receiver, frontend
+├── docker-compose.yml
+├── docker-compose.prod.yml  production overlay
+├── monitoring/              prometheus scrape config + alert rules       postgres, redis, api, worker, receiver, frontend
 ├── README.md                this file
 ├── EXPLANATION.md           design walkthrough + interview questions
 ├── CONNECTING.md            integration guide for publishers and receivers

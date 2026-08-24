@@ -15,6 +15,7 @@ import (
 	"github.com/aryan-jain06/hookrelay/backend/internal/config"
 	"github.com/aryan-jain06/hookrelay/backend/internal/db"
 	"github.com/aryan-jain06/hookrelay/backend/internal/handlers"
+	"github.com/aryan-jain06/hookrelay/backend/internal/metrics"
 	"github.com/aryan-jain06/hookrelay/backend/internal/queue"
 	"github.com/aryan-jain06/hookrelay/backend/internal/repos"
 	"github.com/aryan-jain06/hookrelay/backend/internal/services"
@@ -82,6 +83,11 @@ func run() error {
 		AuthMW:     handlers.RequireAuth(auth),
 
 		CORSAllowOrigin: cfg.CORSAllowOrigin,
+
+		RateLimitPerTenant:   cfg.RateLimitPerTenant,
+		RateLimitTenantBurst: cfg.RateLimitTenantBurst,
+		RateLimitPerIP:       cfg.RateLimitPerIP,
+		RateLimitIPBurst:     cfg.RateLimitIPBurst,
 	})
 
 	srv := &http.Server{
@@ -92,6 +98,12 @@ func run() error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+
+	// Metrics listen on their own address so they are never served through the
+	// public ingress alongside tenant data.
+	metricsErr := make(chan error, 1)
+	go func() { metricsErr <- metrics.Serve(ctx, cfg.MetricsAddr) }()
+	go metrics.SampleQueue(ctx, q, cfg.MetricsSampleInterval)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -115,6 +127,9 @@ func run() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	if err := <-metricsErr; err != nil {
+		return fmt.Errorf("metrics listener: %w", err)
 	}
 	slog.Info("api stopped cleanly")
 	return nil

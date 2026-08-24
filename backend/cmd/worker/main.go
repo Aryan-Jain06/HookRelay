@@ -12,6 +12,7 @@ import (
 
 	"github.com/aryan-jain06/hookrelay/backend/internal/config"
 	"github.com/aryan-jain06/hookrelay/backend/internal/db"
+	"github.com/aryan-jain06/hookrelay/backend/internal/metrics"
 	"github.com/aryan-jain06/hookrelay/backend/internal/queue"
 	"github.com/aryan-jain06/hookrelay/backend/internal/repos"
 	"github.com/aryan-jain06/hookrelay/backend/internal/workers"
@@ -61,7 +62,20 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("build delivery pool: %w", err)
 	}
-	return workerPool.Run(ctx)
+
+	// Metrics listen on their own address so they are never served through the
+	// public ingress. Both run for the pool's lifetime and stop with it.
+	metricsErr := make(chan error, 1)
+	go func() { metricsErr <- metrics.Serve(ctx, cfg.MetricsAddr) }()
+	go metrics.SampleQueue(ctx, q, cfg.MetricsSampleInterval)
+
+	if err := workerPool.Run(ctx); err != nil {
+		return err
+	}
+	if err := <-metricsErr; err != nil {
+		return fmt.Errorf("metrics listener: %w", err)
+	}
+	return nil
 }
 
 // logLevel reads LOG_LEVEL, defaulting to info.

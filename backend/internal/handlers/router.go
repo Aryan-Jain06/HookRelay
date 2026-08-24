@@ -18,6 +18,12 @@ type Deps struct {
 	Health     *HealthHandler
 	AuthMW     func(http.Handler) http.Handler
 
+	// Rate limits; zero disables them.
+	RateLimitPerTenant   float64
+	RateLimitTenantBurst int
+	RateLimitPerIP       float64
+	RateLimitIPBurst     int
+
 	// CORSAllowOrigin is the origin permitted to call the API from a browser.
 	// Empty falls back to "*", which config.ValidateProduction rejects outside
 	// development.
@@ -38,14 +44,21 @@ func NewRouter(d Deps) http.Handler {
 	// Unauthenticated.
 	r.Get("/healthz", d.Health.Healthz)
 	r.Get("/readyz", d.Health.Readyz)
-	r.Post("/auth/register", d.Auth.Register)
-	r.Post("/auth/login", d.Auth.Login)
+	// Unauthenticated and bcrypt-backed, so limited by address.
+	r.Group(func(r chi.Router) {
+		r.Use(RateLimitPerIP(d.RateLimitPerIP, d.RateLimitIPBurst))
+		r.Post("/auth/register", d.Auth.Register)
+		r.Post("/auth/login", d.Auth.Login)
+	})
 
 	// Authenticated: API key (producers) or dashboard JWT.
 	r.Group(func(r chi.Router) {
 		r.Use(d.AuthMW)
+		r.Use(RateLimitPerTenant(d.RateLimitPerTenant, d.RateLimitTenantBurst))
 
 		r.Get("/auth/me", d.Auth.Me)
+		// Requires the dashboard token, not an API key; see RotateAPIKey.
+		r.Post("/auth/api-key/rotate", d.Auth.RotateAPIKey)
 
 		r.Route("/endpoints", func(r chi.Router) {
 			r.Post("/", d.Endpoints.Create)

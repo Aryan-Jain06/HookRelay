@@ -17,7 +17,32 @@ import (
 
 type ctxKey string
 
-const tenantCtxKey ctxKey = "tenant"
+const (
+	tenantCtxKey     ctxKey = "tenant"
+	credentialCtxKey ctxKey = "credential_kind"
+)
+
+// CredentialKind distinguishes how a request authenticated. Some operations
+// require the stronger of the two.
+type CredentialKind string
+
+const (
+	// CredentialAPIKey is a long-lived publishing key.
+	CredentialAPIKey CredentialKind = "api_key"
+	// CredentialToken is a short-lived dashboard JWT, which can only be obtained
+	// by presenting the tenant's password.
+	CredentialToken CredentialKind = "token"
+)
+
+// CredentialFrom reports which credential authenticated the request.
+func CredentialFrom(ctx context.Context) CredentialKind {
+	k, _ := ctx.Value(credentialCtxKey).(CredentialKind)
+	return k
+}
+
+func withCredential(ctx context.Context, k CredentialKind) context.Context {
+	return context.WithValue(ctx, credentialCtxKey, k)
+}
 
 // TenantFrom returns the authenticated tenant, or nil when unauthenticated.
 func TenantFrom(ctx context.Context) *models.Tenant {
@@ -54,10 +79,13 @@ func RequireAuth(auth *services.AuthService) func(http.Handler) http.Handler {
 			var (
 				tenant *models.Tenant
 				err    error
+				kind   CredentialKind
 			)
 			if strings.HasPrefix(raw, services.APIKeyPrefix) {
+				kind = CredentialAPIKey
 				tenant, err = auth.TenantFromAPIKey(r.Context(), raw)
 			} else {
+				kind = CredentialToken
 				tenant, err = auth.TenantFromToken(r.Context(), raw)
 			}
 			if err != nil {
@@ -68,7 +96,8 @@ func RequireAuth(auth *services.AuthService) func(http.Handler) http.Handler {
 				httpx.Error(w, r, httpx.Unauthorized("could not authenticate credential"))
 				return
 			}
-			next.ServeHTTP(w, r.WithContext(withTenant(r.Context(), tenant)))
+			ctx := withCredential(withTenant(r.Context(), tenant), kind)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

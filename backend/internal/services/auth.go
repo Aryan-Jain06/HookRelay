@@ -96,6 +96,24 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*model
 	return tenant, token, nil
 }
 
+// RotateAPIKey issues a new API key for the tenant and invalidates the old one.
+//
+// There is no grace period: the previous key stops working the moment this
+// returns. Unlike an endpoint signing secret, where two secrets can be accepted
+// at once, a key is the thing being looked up, so keeping both valid would mean
+// keeping two live credentials — the opposite of what a rotation is for. Update
+// publishers before calling this.
+func (s *AuthService) RotateAPIKey(ctx context.Context, tenantID uuid.UUID) (string, error) {
+	key, err := GenerateAPIKey()
+	if err != nil {
+		return "", fmt.Errorf("generate api key: %w", err)
+	}
+	if err := s.tenants.RotateAPIKey(ctx, tenantID, HashAPIKey(key), APIKeyDisplayPrefix(key)); err != nil {
+		return "", fmt.Errorf("rotate api key: %w", err)
+	}
+	return key, nil
+}
+
 // IssueToken mints a signed JWT for a tenant.
 func (s *AuthService) IssueToken(t *models.Tenant) (string, error) {
 	now := time.Now()

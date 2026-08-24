@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aryan-jain06/hookrelay/backend/internal/config"
+	"github.com/aryan-jain06/hookrelay/backend/internal/metrics"
 	"github.com/aryan-jain06/hookrelay/backend/internal/queue"
 	"github.com/aryan-jain06/hookrelay/backend/internal/repos"
 	"github.com/aryan-jain06/hookrelay/backend/internal/services"
@@ -98,6 +99,20 @@ func (p *Pool) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		p.reap(ctx)
+	}()
+
+	// Trimmer: keeps acknowledged stream history from growing without bound.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p.trim(ctx)
+	}()
+
+	// Retention: keeps delivery_attempts from growing without bound.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p.pruneAttempts(ctx)
 	}()
 
 	wg.Wait()
@@ -247,6 +262,7 @@ func (p *Pool) reap(ctx context.Context) {
 			slog.Error("reclaim stale deliveries failed", "error", err)
 		} else if len(stale) > 0 {
 			slog.Warn("reclaimed deliveries abandoned mid-attempt", "count", len(stale))
+			metrics.Reclaimed.WithLabelValues("stale_row").Add(float64(len(stale)))
 			if _, err := p.queue.EnqueueMany(ctx, stale); err != nil {
 				slog.Error("re-enqueue reclaimed deliveries failed", "count", len(stale), "error", err)
 			}
@@ -271,6 +287,7 @@ func (p *Pool) reap(ctx context.Context) {
 		}
 		if len(items) > 0 {
 			slog.Warn("reclaimed pending stream entries", "count", len(items), "consumer", p.cfg.ConsumerName)
+			metrics.Reclaimed.WithLabelValues("stream_entry").Add(float64(len(items)))
 			if !p.fanIn(ctx, items) {
 				return
 			}
@@ -285,5 +302,103 @@ func sleepCtx(ctx context.Context, d time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-t.C:
+	}
+}
+
+// trim removes acknowledged stream history on an interval.
+//
+// Acknowledging an entry does not delete it — without this the stream grows
+// forever and Redis eventually refuses writes. Trimming is approximate
+// (XTRIM MAXLEN ~) because exact trimming has to scan whole radix nodes and the
+// precision buys nothing here. A zero interval or length disables the sweep.
+func (p *Pool) trim(ctx context.Context) {
+	if p.cfg.StreamTrimInterval <= 0 || p.cfg.StreamMaxLen <= 0 {
+		slog.Info("stream trimming disabled")
+		return
+	}
+	t := time.NewTicker(p.cfg.StreamTrimInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		before, err := p.queue.Depth(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("stream depth before trim", "error", err)
+			}
+			continue
+		}
+		if before <= p.cfg.StreamMaxLen {
+			continue
+		}
+		if err := p.queue.Trim(ctx, p.cfg.StreamMaxLen); err != nil {
+			if ctx.Err() == nil {
+				slog.Error("stream trim failed", "error", err)
+			}
+			continue
+		}
+		if after, err := p.queue.Depth(ctx); err == nil && before > after {
+			removed := before - after
+			metrics.StreamTrimmed.Add(float64(removed))
+			slog.Info("trimmed stream", "removed", removed, "depth", after)
+		}
+	}
+}
+
+// pruneAttempts deletes attempt history for long-settled deliveries.
+//
+// It runs in the worker rather than as a cron so a deployment cannot forget it,
+// and it deletes in bounded batches, looping until a sweep comes back short, so
+// one pass never holds a long transaction over a hot table. A zero retention or
+// interval disables it.
+func (p *Pool) pruneAttempts(ctx context.Context) {
+	if p.cfg.RetentionInterval <= 0 || p.cfg.AttemptRetention <= 0 {
+		slog.Info("attempt retention disabled")
+		return
+	}
+	const batch = 5000
+
+	sweep := func() {
+		cutoff := time.Now().Add(-p.cfg.AttemptRetention)
+		var total int64
+		for {
+			n, err := p.store.Deliveries.PruneAttempts(ctx, cutoff, batch)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Error("prune attempts failed", "error", err)
+				}
+				return
+			}
+			total += n
+			metrics.AttemptsPruned.Add(float64(n))
+			if n < batch {
+				break
+			}
+			// Yield between batches so a large backlog does not monopolise the
+			// database, and stop promptly on shutdown.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+		if total > 0 {
+			slog.Info("pruned attempt history", "rows", total, "older_than", cutoff)
+		}
+	}
+
+	t := time.NewTicker(p.cfg.RetentionInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sweep()
+		}
 	}
 }

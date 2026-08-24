@@ -51,6 +51,24 @@ type Config struct {
 	// is reachable in local development and must stay false in production.
 	AllowPrivateEndpoints bool
 
+	// MetricsAddr is the listen address for /metrics. Empty disables it. It is
+	// separate from APIAddr so metrics are not exposed through the public
+	// ingress alongside tenant data.
+	MetricsAddr           string
+	MetricsSampleInterval time.Duration
+
+	// Growth control. Zero disables each sweep.
+	StreamMaxLen       int64
+	StreamTrimInterval time.Duration
+	AttemptRetention   time.Duration
+	RetentionInterval  time.Duration
+
+	// Rate limits. Zero or negative disables the limiter.
+	RateLimitPerTenant   float64
+	RateLimitTenantBurst int
+	RateLimitPerIP       float64
+	RateLimitIPBurst     int
+
 	// Circuit breaker.
 	BreakerThreshold int
 	BreakerCooldown  time.Duration
@@ -90,10 +108,22 @@ func Load() (*Config, error) {
 		ReaperMinIdle:         envDuration("REAPER_MIN_IDLE", 60*time.Second),
 		ReaperBatchSize:       envInt("REAPER_BATCH_SIZE", 200),
 		AllowPrivateEndpoints: envBool("ALLOW_PRIVATE_ENDPOINTS", false),
-		BreakerThreshold:      envInt("BREAKER_THRESHOLD", 20),
-		BreakerCooldown:       envDuration("BREAKER_COOLDOWN", 5*time.Minute),
-		RetrySchedule:         env("RETRY_SCHEDULE", ""),
-		DeliveryMaxAge:        envDuration("DELIVERY_MAX_AGE", 24*time.Hour),
+		MetricsAddr:           env("METRICS_ADDR", ":9100"),
+		MetricsSampleInterval: envDuration("METRICS_SAMPLE_INTERVAL", 15*time.Second),
+		StreamMaxLen:          int64(envInt("STREAM_MAX_LEN", 1_000_000)),
+		StreamTrimInterval:    envDuration("STREAM_TRIM_INTERVAL", 10*time.Minute),
+		AttemptRetention:      envDuration("ATTEMPT_RETENTION", 720*time.Hour),
+		RetentionInterval:     envDuration("RETENTION_INTERVAL", 6*time.Hour),
+		RateLimitPerTenant:    envFloat("RATE_LIMIT_PER_TENANT", 200),
+		RateLimitTenantBurst:  envInt("RATE_LIMIT_TENANT_BURST", 400),
+		// Deliberately low: /auth/login is bcrypt-backed, so cheap attempts are
+		// expensive for us and password guessing must not be free.
+		RateLimitPerIP:   envFloat("RATE_LIMIT_PER_IP", 5),
+		RateLimitIPBurst: envInt("RATE_LIMIT_IP_BURST", 10),
+		BreakerThreshold: envInt("BREAKER_THRESHOLD", 20),
+		BreakerCooldown:  envDuration("BREAKER_COOLDOWN", 5*time.Minute),
+		RetrySchedule:    env("RETRY_SCHEDULE", ""),
+		DeliveryMaxAge:   envDuration("DELIVERY_MAX_AGE", 24*time.Hour),
 	}
 	if cfg.WorkerCount < 1 {
 		return nil, fmt.Errorf("WORKER_COUNT must be >= 1, got %d", cfg.WorkerCount)
@@ -129,6 +159,19 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// envFloat reads a floating-point setting.
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 // envBool reads a boolean flag. Only an explicit "true" enables it, so a typo

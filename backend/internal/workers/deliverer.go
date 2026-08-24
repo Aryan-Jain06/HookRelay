@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aryan-jain06/hookrelay/backend/internal/metrics"
 	"github.com/aryan-jain06/hookrelay/backend/internal/models"
 	"github.com/aryan-jain06/hookrelay/backend/internal/repos"
 	"github.com/aryan-jain06/hookrelay/backend/internal/services"
@@ -215,6 +216,9 @@ func (d *Deliverer) recordSuccess(ctx context.Context, item *repos.WorkItem, att
 	if err != nil {
 		return "", fmt.Errorf("record success for %s: %w", item.Delivery.ID, err)
 	}
+	metrics.Attempts.WithLabelValues("success").Inc()
+	metrics.AttemptDuration.WithLabelValues("success").Observe(float64(res.latencyMS) / 1000)
+	metrics.DeliveriesSettled.WithLabelValues(string(models.StatusSucceeded)).Inc()
 	return OutcomeDelivered, nil
 }
 
@@ -260,6 +264,11 @@ func (d *Deliverer) recordFailure(ctx context.Context, item *repos.WorkItem, att
 		"attempt", attemptNo, "of", d.policy.MaxAttempts(),
 		"status_code", res.statusCode, "error", res.errMsg,
 		"retry_in", delay.String(), "outcome", string(outcome))
+	metrics.Attempts.WithLabelValues("failure").Inc()
+	metrics.AttemptDuration.WithLabelValues("failure").Observe(float64(res.latencyMS) / 1000)
+	if outcome == OutcomeDead {
+		metrics.DeliveriesSettled.WithLabelValues(string(models.StatusDead)).Inc()
+	}
 	return outcome, nil
 }
 
@@ -293,6 +302,7 @@ func (d *Deliverer) skip(ctx context.Context, item *repos.WorkItem, attemptNo in
 	if err != nil {
 		return "", fmt.Errorf("record skip for %s: %w", item.Delivery.ID, err)
 	}
+	metrics.Attempts.WithLabelValues("skipped").Inc()
 	return OutcomeSkipped, nil
 }
 
@@ -316,6 +326,8 @@ func (d *Deliverer) expire(ctx context.Context, item *repos.WorkItem, attemptNo 
 	if err != nil {
 		return "", fmt.Errorf("expire delivery %s: %w", item.Delivery.ID, err)
 	}
+	metrics.Attempts.WithLabelValues("expired").Inc()
+	metrics.DeliveriesSettled.WithLabelValues(string(models.StatusDead)).Inc()
 	return OutcomeExpired, nil
 }
 

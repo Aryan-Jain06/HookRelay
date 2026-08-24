@@ -1,0 +1,45 @@
+# The four things worth waking someone for. Everything else is a dashboard.
+groups:
+  - name: hookrelay
+    rules:
+      # The most important signal in the system: deliveries were permanently
+      # abandoned. Every one is a notification a subscriber will never receive.
+      - alert: HookRelayDeadLettersAppearing
+        expr: increase(hookrelay_deliveries_settled_total{status="dead"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deliveries are being dead-lettered"
+          description: "{{ $value }} deliveries exhausted their retries in the last 15m. Check /dlq and replay once the subscriber is fixed."
+
+      # Queue growing steadily means the workers cannot keep up, or are down.
+      - alert: HookRelayQueueNotDraining
+        expr: deriv(hookrelay_stream_depth[10m]) > 0 and hookrelay_stream_depth > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery queue is growing"
+          description: "Stream depth is {{ $value }} and rising. Raise WORKER_COUNT or investigate slow endpoints."
+
+      # Workers claiming work and dying before recording it. The reaper recovers
+      # it, but a sustained value means something is crash-looping.
+      - alert: HookRelayWorkersDying
+        expr: hookrelay_stream_pending_entries > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many unacknowledged stream entries"
+          description: "{{ $value }} entries are held but unacknowledged. Workers are likely restarting mid-delivery."
+
+      # No attempts at all while work is queued means the pipeline has stalled.
+      - alert: HookRelayNoDeliveryAttempts
+        expr: rate(hookrelay_delivery_attempts_total[10m]) == 0 and hookrelay_stream_depth > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deliveries queued but nothing is being attempted"
+          description: "The worker is not processing. Check that it is running and can reach Postgres and Redis."

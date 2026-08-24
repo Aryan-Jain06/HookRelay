@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aryan-jain06/hookrelay/backend/internal/metrics"
 	"github.com/aryan-jain06/hookrelay/backend/internal/models"
 	"github.com/aryan-jain06/hookrelay/backend/internal/queue"
 	"github.com/aryan-jain06/hookrelay/backend/internal/repos"
@@ -90,6 +91,7 @@ func (s *IngestService) Publish(ctx context.Context, tenantID uuid.UUID, in Publ
 	if keyPtr != nil {
 		existing, err := s.store.Events.ByIdempotencyKey(ctx, tenantID, idempotencyKey)
 		if err == nil {
+			metrics.EventsIngested.WithLabelValues("duplicate").Inc()
 			return &PublishResult{Event: existing, Duplicate: true}, nil
 		}
 		if !errors.Is(err, repos.ErrNotFound) {
@@ -136,6 +138,7 @@ func (s *IngestService) Publish(ctx context.Context, tenantID uuid.UUID, in Publ
 		if lookupErr != nil {
 			return nil, fmt.Errorf("resolve idempotency race: %w", lookupErr)
 		}
+		metrics.EventsIngested.WithLabelValues("duplicate").Inc()
 		return &PublishResult{Event: existing, Duplicate: true}, nil
 	case err != nil:
 		return nil, err
@@ -151,6 +154,8 @@ func (s *IngestService) Publish(ctx context.Context, tenantID uuid.UUID, in Publ
 		ids = append(ids, d.ID)
 	}
 	result.DeliveryIDs = ids
+	metrics.EventsIngested.WithLabelValues("created").Inc()
+	metrics.DeliveriesEnqueued.Add(float64(len(ids)))
 
 	entryIDs, err := s.queue.EnqueueMany(ctx, ids)
 	if err != nil {

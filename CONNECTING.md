@@ -740,6 +740,7 @@ Every route needs `Authorization: Bearer <api_key>` except `/auth/*`,
 | `POST` | `/auth/register` | Create a tenant. Returns the API key **once**. |
 | `POST` | `/auth/login` | Email + password → JWT. |
 | `GET` | `/auth/me` | Current tenant. |
+| `POST` | `/auth/api-key/rotate` | New API key; old one dies immediately. Needs the dashboard token. |
 | `GET` | `/stats/overview` | Counts and success rate. |
 | `GET` | `/stats/timeseries` | Deliveries/min, success rate, p95. |
 | `GET` | `/healthz` | Process alive. |
@@ -747,26 +748,37 @@ Every route needs `Authorization: Bearer <api_key>` except `/auth/*`,
 
 ### Rotating your API key
 
-**There is no API-key rotation endpoint yet.** This is a real gap, and worth
-knowing before you hand a key to anything.
+```bash
+# Requires a dashboard token, not the API key itself.
+TOKEN=$(curl -s -X POST $API/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-password"}' | jq -r .token)
 
-Keys are stored only as a SHA-256 hash, so a lost key cannot be recovered. Until
-rotation is exposed, the options are:
+curl -s -X POST $API/auth/api-key/rotate -H "Authorization: Bearer $TOKEN"
+```
 
-- **Create a second tenant** and migrate publishers to it. Clean, but endpoints
-  and history do not carry over.
-- **Replace the hash directly** in Postgres, if you can reach the database:
+```json
+{
+  "api_key": "hrk_f9Net3MJ8G…",
+  "api_key_prefix": "hrk_f9Net3M",
+  "warning": "the previous API key stopped working immediately; this value is shown only once"
+}
+```
 
-  ```sql
-  -- new_key must start with hrk_; store its SHA-256 hex digest, never the key.
-  UPDATE tenants
-  SET api_key_hash   = encode(digest('hrk_your_new_key', 'sha256'), 'hex'),
-      api_key_prefix = left('hrk_your_new_key', 14)
-  WHERE email = 'you@example.com';
-  ```
+Two deliberate design points:
 
-Unlike signing secrets, API keys have **no grace window** — the moment the hash
-changes, the old key stops working. Update every publisher first.
+**It requires the dashboard token, not the API key.** Presenting the API key
+gets a `403`. If a key leaks, whoever holds it must not be able to rotate it and
+lock you out — so rotation always needs the password-derived credential, which
+an attacker holding only the key does not have.
+
+**There is no grace period.** The old key stops working the instant this
+returns. Endpoint signing secrets keep the previous value valid for 24 hours
+because a receiver can try two secrets; an API key is the thing being *looked
+up*, so honouring both would just mean two live credentials — the opposite of
+what rotation is for. **Update every publisher before you call this.**
+
+Keys are stored only as a SHA-256 digest, so a lost key cannot be recovered,
+only replaced.
 
 ---
 
@@ -784,6 +796,9 @@ changes, the old key stops working. Update every publisher first.
 | Delivery dead: "refusing to deliver to internal address" | Endpoint points at a private/loopback IP | Working as intended. Use a tunnel — see [Testing](#testing-before-you-go-live). |
 | Endpoint stopped receiving | Circuit breaker opened after 20 consecutive failures | Fix the receiver; it resumes after 5 minutes. Replay clears the breaker immediately. |
 | `401` publishing | Wrong key, or `whsec_` used instead of `hrk_` | The API key starts `hrk_`; `whsec_` is for verifying. |
+| `401` on every request after a rotation | Publisher still holds the old key | Rotation has no grace period. Roll out the new key everywhere. |
+| `403` rotating the API key | Presented the API key, not a dashboard token | Sign in at `/auth/login` and use that token. |
+| `429` with `Retry-After` | Rate limited | 200 req/s per tenant, 5/s per IP on the auth routes. Tune with `RATE_LIMIT_*`. |
 | CORS errors in the dashboard | `CORS_ALLOW_ORIGIN` mismatch | Must match the dashboard origin exactly, scheme included, no trailing slash. |
 
 ---

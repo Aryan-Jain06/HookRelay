@@ -457,3 +457,34 @@ func (r *DeliveryRepo) CountStuck(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// PruneAttempts deletes attempt rows older than cutoff that belong to
+// deliveries which have already settled, returning how many it removed.
+//
+// delivery_attempts is by far the fastest-growing table: one row per HTTP try,
+// forever. Only settled deliveries are touched, so nothing still retrying loses
+// the history the dashboard shows. The limit keeps each sweep short enough not
+// to hold locks that matter — call it until it returns less than the limit.
+func (r *DeliveryRepo) PruneAttempts(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 10000
+	}
+	const q = `
+		WITH doomed AS (
+			SELECT a.id
+			FROM delivery_attempts a
+			JOIN deliveries d ON d.id = a.delivery_id
+			WHERE a.attempted_at < $1
+			  AND d.status IN ('succeeded', 'dead')
+			  AND d.completed_at IS NOT NULL
+			  AND d.completed_at < $1
+			LIMIT $2
+		)
+		DELETE FROM delivery_attempts
+		WHERE id IN (SELECT id FROM doomed)`
+	tag, err := r.q.Exec(ctx, q, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune attempts: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

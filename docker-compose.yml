@@ -41,6 +41,7 @@ services:
       API_ADDR: ":8080"
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-*}
+      METRICS_ADDR: ":9100"
       ENVIRONMENT: development
     ports:
       - "8080:8080"
@@ -81,6 +82,7 @@ services:
       # this true in production lets a tenant point an endpoint at the cloud
       # metadata service and read the instance's credentials.
       ALLOW_PRIVATE_ENDPOINTS: ${ALLOW_PRIVATE_ENDPOINTS:-true}
+      METRICS_ADDR: ":9100"
       ENVIRONMENT: development
     depends_on:
       postgres:
