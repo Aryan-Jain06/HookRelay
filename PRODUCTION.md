@@ -46,7 +46,18 @@ live.
 
 ## Stage 0 — Blockers (do not go live without these)
 
-### 0.1 Block SSRF on endpoint URLs 🔴
+> **0.1, and the enforcement for 0.2–0.3, are now implemented in the code.** The
+> SSRF dialler ships in `backend/internal/workers/safedial.go`, and the API and
+> worker refuse to start when `ENVIRONMENT=production` with a default
+> `JWT_SECRET`, a wildcard `CORS_ALLOW_ORIGIN`, or `ALLOW_PRIVATE_ENDPOINTS`
+> set — see `config.ValidateProduction`. `docker-compose.prod.yml` and
+> `Caddyfile.example` cover 0.4–0.5. What is left for you is supplying the real
+> secret and origin values, which no code can do for you.
+>
+> The subsections below are kept as the rationale, and because you still need to
+> know what these guards are protecting you from.
+
+### 0.1 Block SSRF on endpoint URLs — ✅ implemented
 
 **Why:** Right now a tenant can register `http://169.254.169.254/latest/meta-data/`
 (cloud credentials), `http://127.0.0.1:6379/` (your Redis), or
@@ -152,7 +163,13 @@ if os.Getenv("ALLOW_PRIVATE_ENDPOINTS") != "true" {
 Add `ALLOW_PRIVATE_ENDPOINTS=true` to the `worker` service in
 `docker-compose.yml`, and never to production.
 
-**This code is tested, not sketched.** It was compiled and run against 12
+**This is now in the repo** as `backend/internal/workers/safedial.go`, wired
+through `config.AllowPrivateEndpoints`, with unit tests covering 20 addresses.
+It was verified end to end against a live stack: deliveries to
+`169.254.169.254`, `127.0.0.1:6379` and `10.0.0.5` were all refused, as were
+*hostnames* resolving to those addresses — the case a URL-string check misses.
+
+The original note, for the record: it was compiled and run against 12
 addresses — `169.254.169.254`, `127.0.0.1`, `10.0.0.5`, `172.16.0.1`,
 `192.168.1.1`, `::1`, `fd00::1`, `0.0.0.0`, `100.64.0.1` all blocked;
 `1.1.1.1`, `93.184.216.34`, `2606:4700::1111` all allowed — plus a real
@@ -172,7 +189,7 @@ curl -X POST $API/events -H "Authorization: Bearer $KEY" \
 Add a unit test for `ipBlocked` while you are there — it is a pure function and
 the table above is the test case.
 
-### 0.2 Set a real `JWT_SECRET` 🔴
+### 0.2 Set a real `JWT_SECRET` — 🔴 still yours to supply
 
 **Why:** the default is `dev-only-change-me`, in a public repo. Anyone can mint a
 token for any tenant.
@@ -185,7 +202,7 @@ Put it in `.env` (already git-ignored). Rotating it logs everyone out of the
 dashboard, which is the point. It does **not** affect API keys or webhook signing
 secrets.
 
-### 0.3 Lock down CORS 🔴
+### 0.3 Lock down CORS — 🔴 still yours to supply
 
 **Why:** `CORS_ALLOW_ORIGIN=*` lets any website make authenticated dashboard
 calls from a victim's browser.
@@ -194,7 +211,7 @@ calls from a victim's browser.
 CORS_ALLOW_ORIGIN=https://hookrelay.yourdomain.com
 ```
 
-### 0.4 Terminate TLS 🔴
+### 0.4 Terminate TLS — ⚙️ `Caddyfile.example` provided
 
 **Why:** API keys and signing secrets travel in headers and bodies. Plain HTTP
 publishes them to every hop. HookRelay speaks HTTP on purpose and expects a proxy
@@ -231,7 +248,7 @@ Do the same for `3000`, and **delete the `ports:` block entirely** from
 `postgres`, `redis` and `receiver` — they only need to be reachable inside the
 compose network, and the `receiver` should not be deployed to production at all.
 
-### 0.5 Remove the test receiver from production 🔴
+### 0.5 Remove the test receiver from production — ✅ done in the prod overlay
 
 **Why:** `/receiver` is a deliberately broken service with an unauthenticated
 `/_control` endpoint. It exists to test HookRelay. It has no business in
@@ -773,8 +790,11 @@ Copy this into your issue tracker.
 
 **Blockers**
 
-- [ ] SSRF dialler installed; `ALLOW_PRIVATE_ENDPOINTS` **not** set in production
-- [ ] Verified: an endpoint pointing at `169.254.169.254` fails to deliver
+- [x] SSRF dialler installed (ships in the repo)
+- [x] `receiver` removed from the production compose file (prod overlay)
+- [x] App ports bound to `127.0.0.1`; no `ports:` on postgres/redis (prod overlay)
+- [ ] `ALLOW_PRIVATE_ENDPOINTS` **not** set in your production `.env`
+- [ ] Verified against your deployment: an endpoint pointing at `169.254.169.254` fails to deliver
 - [ ] `JWT_SECRET` generated with `openssl rand -base64 48`
 - [ ] `CORS_ALLOW_ORIGIN` set to the dashboard origin, not `*`
 - [ ] TLS terminating in front of both API and dashboard

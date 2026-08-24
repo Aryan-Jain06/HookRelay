@@ -1,0 +1,36 @@
+# Copy to Caddyfile, replace both hostnames, then:
+#
+#   docker run -d --name caddy --restart unless-stopped --network host \
+#     -v $PWD/Caddyfile:/etc/caddy/Caddyfile \
+#     -v caddy_data:/data -v caddy_config:/config \
+#     caddy:2-alpine
+#
+# Caddy obtains and renews Let's Encrypt certificates automatically. Port 80
+# must be open for the ACME challenge even though everything redirects to 443.
+
+# The API producers publish to and the dashboard calls.
+api.hookrelay.example.com {
+	reverse_proxy 127.0.0.1:8080
+}
+
+# The dashboard.
+hookrelay.example.com {
+	reverse_proxy 127.0.0.1:3000
+
+	# Uncomment to keep the dashboard off the public internet entirely.
+	# @notlocal not remote_ip 203.0.113.0/24
+	# abort @notlocal
+}
+
+# Once you have your own tenant, close public registration. Generate the hash
+# with: docker run --rm caddy:2-alpine caddy hash-password --plaintext 'yourpass'
+#
+# api.hookrelay.example.com {
+# 	handle /auth/register {
+# 		basic_auth {
+# 			admin $2a$14$replace.with.your.own.hash
+# 		}
+# 		reverse_proxy 127.0.0.1:8080
+# 	}
+# 	reverse_proxy 127.0.0.1:8080
+# }

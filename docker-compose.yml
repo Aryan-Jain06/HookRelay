@@ -76,6 +76,11 @@ services:
       # Compress the backoff in a test environment to exercise the dead-letter
       # path in seconds, e.g. RETRY_SCHEDULE=1s,1s,2s,2s,3s,3s,4s
       RETRY_SCHEDULE: ${RETRY_SCHEDULE:-}
+      # Lifts the SSRF guard so the bundled test receiver, which listens on a
+      # private Docker address, is reachable. Local development only — leaving
+      # this true in production lets a tenant point an endpoint at the cloud
+      # metadata service and read the instance's credentials.
+      ALLOW_PRIVATE_ENDPOINTS: ${ALLOW_PRIVATE_ENDPOINTS:-true}
       ENVIRONMENT: development
     depends_on:
       postgres:

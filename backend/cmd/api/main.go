@@ -34,6 +34,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := cfg.ValidateProduction(); err != nil {
+		return err
+	}
 
 	// Signals cancel this context, which unwinds startup and serving alike.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -77,6 +80,8 @@ func run() error {
 		Deliveries: handlers.NewDeliveryHandler(store, ingest),
 		Health:     handlers.NewHealthHandler(pool, rdb),
 		AuthMW:     handlers.RequireAuth(auth),
+
+		CORSAllowOrigin: cfg.CORSAllowOrigin,
 	})
 
 	srv := &http.Server{

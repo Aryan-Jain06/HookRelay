@@ -22,6 +22,7 @@ with **zero lost**, including a hard `SIGKILL` of the worker mid-flight.
 ## Contents
 
 - [Screenshots](#screenshots)
+- [Connecting your app](CONNECTING.md)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [Architecture](#architecture)
@@ -892,6 +893,7 @@ hookrelay/
 ├── docker-compose.yml       postgres, redis, api, worker, receiver, frontend
 ├── README.md                this file
 ├── EXPLANATION.md           design walkthrough + interview questions
+├── CONNECTING.md            integration guide for publishers and receivers
 ├── GO_LIVE.md               step-by-step deploy walkthrough
 ├── PRODUCTION.md            ordered $0 production-readiness checklist
 ├── DEPLOYMENT.md            hosting, infra and CD reference
@@ -927,6 +929,9 @@ hookrelay/
 - **[EXPLANATION.md](EXPLANATION.md)** — every component and design decision in
   plain language, the alternatives considered and rejected, and the ten hardest
   questions this architecture invites, answered properly.
+- **[CONNECTING.md](CONNECTING.md)** — wire your app to HookRelay: publish
+  events and verify signed webhooks, with working code in Node, Python and Go.
+  Start here if you want to *use* it.
 - **[GO_LIVE.md](GO_LIVE.md)** — a click-by-click walkthrough that ends with
   HookRelay on a public HTTPS URL you own, for $0. Start here if you want it
   *running*.

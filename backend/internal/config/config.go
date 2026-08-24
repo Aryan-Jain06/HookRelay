@@ -5,8 +5,16 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
+
+// DefaultJWTSecret is the development placeholder. It is a named constant so
+// the production guard can refuse to start when it is still in use.
+const DefaultJWTSecret = "dev-only-change-me"
+
+// EnvProduction is the ENVIRONMENT value that turns on the production guards.
+const EnvProduction = "production"
 
 // Config is the full configuration surface shared by the API and worker binaries.
 type Config struct {
@@ -15,6 +23,10 @@ type Config struct {
 
 	APIAddr   string
 	JWTSecret string
+
+	// CORSAllowOrigin is the single origin permitted to call the API from a
+	// browser. "*" is convenient locally and unacceptable in production.
+	CORSAllowOrigin string
 
 	// Stream / consumer-group settings.
 	StreamName    string
@@ -33,6 +45,11 @@ type Config struct {
 	ReaperInterval  time.Duration
 	ReaperMinIdle   time.Duration
 	ReaperBatchSize int
+
+	// AllowPrivateEndpoints lifts the SSRF guard on delivery, permitting
+	// loopback and RFC1918 destinations. It exists so the bundled test receiver
+	// is reachable in local development and must stay false in production.
+	AllowPrivateEndpoints bool
 
 	// Circuit breaker.
 	BreakerThreshold int
@@ -56,25 +73,27 @@ type Config struct {
 // local `docker compose up` work with no .env file at all.
 func Load() (*Config, error) {
 	cfg := &Config{
-		DatabaseURL:        env("DATABASE_URL", "postgres://hookrelay:hookrelay@localhost:5432/hookrelay?sslmode=disable"),
-		RedisURL:           env("REDIS_URL", "redis://localhost:6379/0"),
-		APIAddr:            env("API_ADDR", ":8080"),
-		JWTSecret:          env("JWT_SECRET", "dev-only-change-me"),
-		StreamName:         env("STREAM_NAME", "deliveries_stream"),
-		ConsumerGroup:      env("CONSUMER_GROUP", "delivery_workers"),
-		ConsumerName:       env("CONSUMER_NAME", defaultConsumerName()),
-		Environment:        env("ENVIRONMENT", "development"),
-		WorkerCount:        envInt("WORKER_COUNT", 8),
-		DeliveryTimeout:    envDuration("DELIVERY_TIMEOUT", 10*time.Second),
-		SchedulerInterval:  envDuration("SCHEDULER_INTERVAL", time.Second),
-		SchedulerBatchSize: envInt("SCHEDULER_BATCH_SIZE", 500),
-		ReaperInterval:     envDuration("REAPER_INTERVAL", 15*time.Second),
-		ReaperMinIdle:      envDuration("REAPER_MIN_IDLE", 60*time.Second),
-		ReaperBatchSize:    envInt("REAPER_BATCH_SIZE", 200),
-		BreakerThreshold:   envInt("BREAKER_THRESHOLD", 20),
-		BreakerCooldown:    envDuration("BREAKER_COOLDOWN", 5*time.Minute),
-		RetrySchedule:      env("RETRY_SCHEDULE", ""),
-		DeliveryMaxAge:     envDuration("DELIVERY_MAX_AGE", 24*time.Hour),
+		DatabaseURL:           env("DATABASE_URL", "postgres://hookrelay:hookrelay@localhost:5432/hookrelay?sslmode=disable"),
+		RedisURL:              env("REDIS_URL", "redis://localhost:6379/0"),
+		APIAddr:               env("API_ADDR", ":8080"),
+		JWTSecret:             env("JWT_SECRET", DefaultJWTSecret),
+		CORSAllowOrigin:       env("CORS_ALLOW_ORIGIN", "*"),
+		StreamName:            env("STREAM_NAME", "deliveries_stream"),
+		ConsumerGroup:         env("CONSUMER_GROUP", "delivery_workers"),
+		ConsumerName:          env("CONSUMER_NAME", defaultConsumerName()),
+		Environment:           env("ENVIRONMENT", "development"),
+		WorkerCount:           envInt("WORKER_COUNT", 8),
+		DeliveryTimeout:       envDuration("DELIVERY_TIMEOUT", 10*time.Second),
+		SchedulerInterval:     envDuration("SCHEDULER_INTERVAL", time.Second),
+		SchedulerBatchSize:    envInt("SCHEDULER_BATCH_SIZE", 500),
+		ReaperInterval:        envDuration("REAPER_INTERVAL", 15*time.Second),
+		ReaperMinIdle:         envDuration("REAPER_MIN_IDLE", 60*time.Second),
+		ReaperBatchSize:       envInt("REAPER_BATCH_SIZE", 200),
+		AllowPrivateEndpoints: envBool("ALLOW_PRIVATE_ENDPOINTS", false),
+		BreakerThreshold:      envInt("BREAKER_THRESHOLD", 20),
+		BreakerCooldown:       envDuration("BREAKER_COOLDOWN", 5*time.Minute),
+		RetrySchedule:         env("RETRY_SCHEDULE", ""),
+		DeliveryMaxAge:        envDuration("DELIVERY_MAX_AGE", 24*time.Hour),
 	}
 	if cfg.WorkerCount < 1 {
 		return nil, fmt.Errorf("WORKER_COUNT must be >= 1, got %d", cfg.WorkerCount)
@@ -112,6 +131,20 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
+// envBool reads a boolean flag. Only an explicit "true" enables it, so a typo
+// leaves a security-relevant default alone rather than flipping it.
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
+}
+
 func envDuration(key string, fallback time.Duration) time.Duration {
 	v := os.Getenv(key)
 	if v == "" {
@@ -122,4 +155,33 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// ValidateProduction refuses to run with a configuration that is unsafe on a
+// public network. It is a no-op outside ENVIRONMENT=production.
+//
+// Each of these is a mistake that is easy to make, silent at startup, and
+// expensive afterwards, so the process fails fast and names every problem at
+// once rather than one per restart.
+func (c *Config) ValidateProduction() error {
+	if c.Environment != EnvProduction {
+		return nil
+	}
+	var problems []string
+	if c.JWTSecret == DefaultJWTSecret {
+		problems = append(problems, "JWT_SECRET is still the development default: anyone can mint a dashboard token for any tenant (generate one with `openssl rand -base64 48`)")
+	}
+	if len(c.JWTSecret) < 32 {
+		problems = append(problems, fmt.Sprintf("JWT_SECRET is only %d bytes; use at least 32", len(c.JWTSecret)))
+	}
+	if c.CORSAllowOrigin == "*" {
+		problems = append(problems, "CORS_ALLOW_ORIGIN is \"*\": any website could make authenticated dashboard calls from a visitor's browser (set it to the dashboard origin)")
+	}
+	if c.AllowPrivateEndpoints {
+		problems = append(problems, "ALLOW_PRIVATE_ENDPOINTS is enabled: a tenant could register http://169.254.169.254/ and read this instance's cloud credentials (unset it outside local development)")
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to start in production with an unsafe configuration:\n  - %s", strings.Join(problems, "\n  - "))
 }

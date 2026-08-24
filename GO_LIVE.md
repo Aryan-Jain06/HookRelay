@@ -3,7 +3,7 @@
 A literal walkthrough. Follow it top to bottom and you end with HookRelay running
 on a public HTTPS URL that you own.
 
-**Time:** about 2 hours, most of it waiting on Oracle's signup and one Docker
+**Time:** about 1h45, most of it waiting on Oracle's signup and one Docker
 build.
 **Cost:** $0. A domain is optional (~$10/year); there is an IP-only path if you
 skip it.
@@ -11,7 +11,7 @@ skip it.
 
 | Part | What | Time |
 |---|---|---|
-| [1](#part-1--apply-the-security-fix) | Apply the security fix | 10 min |
+| [1](#part-1--what-is-already-done-for-you) | (already done — just read it) | 2 min |
 | [2](#part-2--get-a-free-server) | Get a free server | 30–45 min |
 | [3](#part-3--prepare-the-server) | Install Docker, open the firewall | 15 min |
 | [4](#part-4--get-the-code-and-set-your-secrets) | Get the code, set secrets | 10 min |
@@ -26,167 +26,46 @@ skip it.
 
 ---
 
-## Part 1 — Apply the security fix
+## Part 1 — What is already done for you
 
-**Do this before anything is publicly reachable.** As shipped, a tenant can
-register `http://169.254.169.254/` as an endpoint, and HookRelay will happily
-sign and POST to it — handing back your cloud provider's credentials. On your
-laptop that is harmless. On a public URL it is a live vulnerability.
+Nothing to do here. This part used to ask you to paste in a security fix; it is
+now in the code, so this is just what you are getting.
 
-This is ten minutes of copy-paste. Do not skip it.
+**The SSRF guard.** Endpoint URLs come from tenants, so without a guard a tenant
+can register `http://169.254.169.254/` and have HookRelay read this machine's
+cloud credentials on their behalf. Deliveries now refuse to connect to loopback,
+link-local, carrier-grade NAT and RFC1918 addresses.
 
-### 1.1 Create the safe dialler
+The check runs in the dialler's `Control` hook rather than against the URL,
+because `Control` fires *after* DNS resolution with the concrete address about to
+be dialled. Checking the hostname string would miss
+`evil.example.com → 169.254.169.254`, and there is no resolve-then-connect
+window to race.
 
-`[local]` In your clone, create **`backend/internal/workers/safedial.go`**:
+**A production configuration guard.** The API and worker now refuse to start when
+`ENVIRONMENT=production` and any of these is true, reporting every problem at
+once:
 
-```go
-package workers
+| Condition | Why it is refused |
+|---|---|
+| `JWT_SECRET` is the dev default | Anyone could mint a dashboard token for any tenant |
+| `JWT_SECRET` shorter than 32 bytes | Brute-forceable |
+| `CORS_ALLOW_ORIGIN` is `*` | Any website could make authenticated calls from a visitor's browser |
+| `ALLOW_PRIVATE_ENDPOINTS` is set | The SSRF guard would be off |
 
-import (
-	"fmt"
-	"net"
-	"os"
-	"syscall"
-	"time"
-)
+So a misconfigured deployment fails loudly at boot instead of running exposed.
+If the API will not start, read the error — it tells you exactly what to fix.
 
-// blockedNets are ranges a webhook must never reach: loopback, link-local
-// (cloud metadata lives at 169.254.169.254) and RFC1918 private space. A
-// tenant-supplied URL must not become a proxy into our own network.
-var blockedNets = func() []*net.IPNet {
-	cidrs := []string{
-		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16",
-		"198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
-		"::1/128", "fc00::/7", "fe80::/10", "::/128",
-	}
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, c := range cidrs {
-		if _, n, err := net.ParseCIDR(c); err == nil {
-			out = append(out, n)
-		}
-	}
-	return out
-}()
+**`docker-compose.prod.yml` and `Caddyfile.example`** are in the repo, so Parts 5
+and 7 are copy-and-edit rather than write-from-scratch.
 
-// ipBlocked reports whether ip is in a range webhooks must not reach.
-func ipBlocked(ip net.IP) bool {
-	if ip == nil || ip.IsUnspecified() || ip.IsLoopback() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-	for _, n := range blockedNets {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+`ALLOW_PRIVATE_ENDPOINTS` stays `true` in the base compose file so `docker
+compose up` can still reach the bundled test receiver, which lives on a private
+address. The production overlay sets it to `false` explicitly — not merely
+omitting it, since Compose merges environment maps and the development default
+would otherwise survive.
 
-// safeDialer refuses to connect to internal addresses. The check runs in
-// Control, which fires after DNS resolution with the concrete address being
-// dialled — so a public hostname that resolves to a private IP is still caught,
-// and there is no resolve-then-connect race to exploit.
-func safeDialer(timeout time.Duration) *net.Dialer {
-	return &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: 30 * time.Second,
-		Control: func(network, address string, _ syscall.RawConn) error {
-			host, _, err := net.SplitHostPort(address)
-			if err != nil {
-				return fmt.Errorf("parse dial address %q: %w", address, err)
-			}
-			if ip := net.ParseIP(host); ipBlocked(ip) {
-				return fmt.Errorf("refusing to deliver to internal address %s", ip)
-			}
-			return nil
-		},
-	}
-}
-
-// deliveryTransport builds the HTTP transport used for deliveries. The SSRF
-// guard is on unless ALLOW_PRIVATE_ENDPOINTS is explicitly set, so the safe
-// behaviour is the default and the escape hatch has to be asked for.
-func deliveryTransport() *http.Transport {
-	tr := &http.Transport{
-		MaxIdleConns:        512,
-		MaxIdleConnsPerHost: 32,
-		IdleConnTimeout:     90 * time.Second,
-	}
-	if os.Getenv("ALLOW_PRIVATE_ENDPOINTS") != "true" {
-		tr.DialContext = safeDialer(5 * time.Second).DialContext
-	}
-	return tr
-}
-```
-
-Add `"net/http"` to that import block (the last function needs it):
-
-```go
-import (
-	"fmt"
-	"net"
-	"net/http"
-	"os"
-	"syscall"
-	"time"
-)
-```
-
-### 1.2 Use it
-
-`[local]` In **`backend/internal/workers/deliverer.go`**, find this inside
-`NewDeliverer`:
-
-```go
-			Transport: &http.Transport{
-				MaxIdleConns:        512,
-				MaxIdleConnsPerHost: 32,
-				IdleConnTimeout:     90 * time.Second,
-			},
-```
-
-Replace those five lines with:
-
-```go
-			Transport: deliveryTransport(),
-```
-
-### 1.3 Keep local development working
-
-The test receiver lives on a private Docker address, so `docker compose up`
-locally needs the escape hatch. `[local]` in **`docker-compose.yml`**, under
-`worker:` → `environment:`, add:
-
-```yaml
-      # Local development only: the test receiver is on a private address.
-      # Never set this in production.
-      ALLOW_PRIVATE_ENDPOINTS: ${ALLOW_PRIVATE_ENDPOINTS:-false}
-```
-
-and in **`.env`** for local work only, `ALLOW_PRIVATE_ENDPOINTS=true`. Your
-production `.env` must leave it out.
-
-### 1.4 Format, check, push
-
-Replacing that block leaves one line misaligned, and CI **fails the build if
-anything is not gofmt'd**. So format first:
-
-```bash
-[local] cd backend
-[local] gofmt -w .
-[local] go build ./... && go vet ./... && go test -race ./... && cd ..
-```
-
-Expected: `ok ... internal/services`, and silence from build and vet. Then:
-
-```bash
-[local] git add -A && git commit -m "Block delivery to internal addresses" && git push
-```
-
-I verified this exact sequence against this repo: it builds, vets, passes tests
-under `-race`, and `gofmt -w` leaves a clean tree. If `go build` complains about
-`net/http`, you missed the import edit at the end of 1.1.
+You can confirm all of this is live once you are running, in Part 8.4.
 
 ---
 
@@ -377,57 +256,15 @@ fine for a demo you show someone, not for anything real. Get the domain.
 
 ## Part 5 — The production overrides
 
-Three things must change from the development defaults: the test receiver must
-not run, the internal ports must not be public, and Redis must not be allowed to
+The overlay is already in the repo. It stops the test receiver from running,
+takes Postgres and Redis off the public internet, binds the app ports to
+loopback so everything goes through the TLS proxy, and tells Redis never to
 evict your queue.
 
+Nothing to write. Just check it is there:
+
 ```bash
-[server] cat > docker-compose.prod.yml <<'EOF'
-# Production overlay. Use with:
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-services:
-  # The test receiver is a deliberately broken service with an unauthenticated
-  # control endpoint. It exists to test HookRelay and must never run here.
-  receiver:
-    deploy:
-      replicas: 0
-
-  postgres:
-    # Reachable only inside the compose network.
-    ports: []
-    environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-
-  redis:
-    ports: []
-    # noeviction is the important one. Under any allkeys-* policy Redis would
-    # evict the delivery stream to free memory and queued work would vanish.
-    # noeviction makes it reject writes instead, which is a loud error the
-    # scheduler recovers from.
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
-
-  api:
-    # Bound to loopback so all traffic goes through the TLS proxy.
-    ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      ENVIRONMENT: production
-      LOG_LEVEL: info
-      DATABASE_URL: postgres://hookrelay:${POSTGRES_PASSWORD}@postgres:5432/hookrelay?sslmode=disable
-    restart: unless-stopped
-
-  worker:
-    environment:
-      ENVIRONMENT: production
-      LOG_LEVEL: info
-      DATABASE_URL: postgres://hookrelay:${POSTGRES_PASSWORD}@postgres:5432/hookrelay?sslmode=disable
-    restart: unless-stopped
-
-  frontend:
-    ports:
-      - "127.0.0.1:3000:3000"
-    restart: unless-stopped
-EOF
+[server] head -20 docker-compose.prod.yml
 ```
 
 Save yourself typing the long command every time:
@@ -436,6 +273,16 @@ Save yourself typing the long command every time:
 [server] echo "alias hr='docker compose -f /srv/hookrelay/docker-compose.yml -f /srv/hookrelay/docker-compose.prod.yml'" >> ~/.bashrc
 [server] source ~/.bashrc
 ```
+
+Confirm your `.env` satisfies it before building — this resolves the overlay
+without starting anything, and names any variable you have missed:
+
+```bash
+[server] hr config > /dev/null && echo "config OK"
+```
+
+If it complains `required variable POSTGRES_PASSWORD is missing a value`, go
+back to Part 4.1.
 
 ---
 
@@ -512,18 +359,12 @@ Caddy gets and renews Let's Encrypt certificates automatically. No configuration
 beyond this, no cron, no renewal to remember.
 
 ```bash
-[server] cat > /srv/hookrelay/Caddyfile <<'EOF'
-api.hookrelay.example.com {
-	reverse_proxy 127.0.0.1:8080
-}
-
-hookrelay.example.com {
-	reverse_proxy 127.0.0.1:3000
-}
-EOF
+[server] cp /srv/hookrelay/Caddyfile.example /srv/hookrelay/Caddyfile
+[server] nano /srv/hookrelay/Caddyfile     # replace both hostnames with yours
 ```
 
-Replace both hostnames with yours, then:
+The example also carries a commented-out block for putting basic auth on
+`/auth/register` once you have your own tenant. Then:
 
 ```bash
 [server] docker run -d --name caddy --restart unless-stopped --network host \
@@ -739,6 +580,14 @@ Useful commands:
 [server] hr restart worker      # safe: loses nothing, the reaper recovers in-flight work
 [server] hr down                # stop everything (data survives in volumes)
 ```
+
+---
+
+## Connecting your application
+
+With HookRelay live, [CONNECTING.md](CONNECTING.md) covers wiring your app to it:
+publishing events, verifying signatures, and making your handler idempotent —
+with working code in Node, Python and Go.
 
 ---
 

@@ -35,9 +35,11 @@ type Deliverer struct {
 	maxAge  time.Duration
 }
 
-// NewDeliverer builds a Deliverer. maxAge is the absolute deadline after which a
+// NewDeliverer builds a Deliverer. allowPrivate lifts the SSRF guard and must be
+// false anywhere tenants can register their own endpoint URLs. maxAge is the
+// absolute deadline after which a
 // delivery is dead-lettered regardless of how many attempts it has left.
-func NewDeliverer(store *repos.Store, breaker services.BreakerConfig, policy services.RetryPolicy, timeout, maxAge time.Duration) *Deliverer {
+func NewDeliverer(store *repos.Store, breaker services.BreakerConfig, policy services.RetryPolicy, timeout, maxAge time.Duration, allowPrivate bool) *Deliverer {
 	return &Deliverer{
 		store:   store,
 		breaker: breaker,
@@ -46,12 +48,8 @@ func NewDeliverer(store *repos.Store, breaker services.BreakerConfig, policy ser
 		maxAge:  maxAge,
 		client: &http.Client{
 			// Per-request timeouts come from the context; this is a backstop.
-			Timeout: timeout,
-			Transport: &http.Transport{
-				MaxIdleConns:        512,
-				MaxIdleConnsPerHost: 32,
-				IdleConnTimeout:     90 * time.Second,
-			},
+			Timeout:   timeout,
+			Transport: deliveryTransport(allowPrivate),
 			// Webhook receivers should not be able to bounce us somewhere else.
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse

@@ -31,6 +31,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := cfg.ValidateProduction(); err != nil {
+		return err
+	}
 
 	// SIGTERM is what `docker compose kill -s TERM` and orchestrators send; the
 	// pool drains in-flight attempts before Run returns.

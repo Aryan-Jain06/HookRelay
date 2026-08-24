@@ -1,0 +1,65 @@
+# Production overlay. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# It changes four things from the development defaults:
+#   1. the test receiver does not run,
+#   2. Postgres and Redis are unreachable from outside the compose network,
+#   3. the app ports bind to loopback so all traffic goes through the TLS proxy,
+#   4. Redis is told never to evict, so it can never drop queued deliveries.
+#
+# Requires POSTGRES_PASSWORD, JWT_SECRET, CORS_ALLOW_ORIGIN and
+# NEXT_PUBLIC_API_URL in .env. The API refuses to start in production without
+# safe values, so a missing one fails loudly at boot rather than silently.
+
+services:
+  # The test receiver is a deliberately broken service with an unauthenticated
+  # control endpoint. It exists to exercise HookRelay and must never run here.
+  receiver:
+    deploy:
+      replicas: 0
+    ports: !override []
+
+  postgres:
+    ports: !override []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+
+  redis:
+    ports: !override []
+    # noeviction is the setting that matters. Under any allkeys-* policy Redis
+    # would evict the delivery stream to reclaim memory and queued work would
+    # silently disappear. noeviction makes it reject writes instead, which
+    # surfaces as a loud error the scheduler recovers from.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+
+  api:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgres://hookrelay:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/hookrelay?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env; generate with openssl rand -base64 48}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:?CORS_ALLOW_ORIGIN must be the dashboard origin, not *}
+    restart: unless-stopped
+
+  worker:
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgres://hookrelay:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/hookrelay?sslmode=disable
+      WORKER_COUNT: ${WORKER_COUNT:-50}
+      # Set explicitly, not merely omitted: Compose merges environment maps, so
+      # the development default of true in the base file would otherwise survive
+      # into production and leave the SSRF guard off. With it enabled a tenant
+      # could register http://169.254.169.254/ and read this instance's cloud
+      # credentials. (ValidateProduction also refuses to start in that state, so
+      # this is belt and braces.)
+      ALLOW_PRIVATE_ENDPOINTS: "false"
+      # Empty means the real 5s..5h backoff. A non-empty value compresses
+      # retries into seconds, which is only ever wanted in tests.
+      RETRY_SCHEDULE: ""
+    restart: unless-stopped
+
+  frontend:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped

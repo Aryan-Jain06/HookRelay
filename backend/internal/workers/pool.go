@@ -45,7 +45,7 @@ func NewPool(cfg *config.Config, store *repos.Store, q *queue.Queue) (*Pool, err
 		store:     store,
 		queue:     q,
 		policy:    policy,
-		deliverer: NewDeliverer(store, breaker, policy, cfg.DeliveryTimeout, cfg.DeliveryMaxAge),
+		deliverer: NewDeliverer(store, breaker, policy, cfg.DeliveryTimeout, cfg.DeliveryMaxAge, cfg.AllowPrivateEndpoints),
 		dispatch:  make(chan queue.Item, cfg.WorkerCount),
 	}, nil
 }

@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/aryan-jain06/hookrelay/backend/internal/httpx"
@@ -18,6 +17,11 @@ type Deps struct {
 	Deliveries *DeliveryHandler
 	Health     *HealthHandler
 	AuthMW     func(http.Handler) http.Handler
+
+	// CORSAllowOrigin is the origin permitted to call the API from a browser.
+	// Empty falls back to "*", which config.ValidateProduction rejects outside
+	// development.
+	CORSAllowOrigin string
 }
 
 // NewRouter builds the full API surface.
@@ -29,7 +33,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(Recoverer)
 	r.Use(RequestLogger)
 	r.Use(middleware.Timeout(30 * time.Second))
-	r.Use(CORS(corsOrigin()))
+	r.Use(CORS(corsOrigin(d.CORSAllowOrigin)))
 
 	// Unauthenticated.
 	r.Get("/healthz", d.Health.Healthz)
@@ -80,10 +84,10 @@ func NewRouter(d Deps) http.Handler {
 	return r
 }
 
-// corsOrigin returns the dashboard origin allowed to call the API.
-func corsOrigin() string {
-	if v := os.Getenv("CORS_ALLOW_ORIGIN"); v != "" {
-		return v
+// corsOrigin resolves the dashboard origin allowed to call the API.
+func corsOrigin(configured string) string {
+	if configured != "" {
+		return configured
 	}
 	return "*"
 }
