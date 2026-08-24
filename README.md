@@ -21,6 +21,7 @@ with **zero lost**, including a hard `SIGKILL` of the worker mid-flight.
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [Architecture](#architecture)
@@ -36,6 +37,46 @@ with **zero lost**, including a hard `SIGKILL` of the worker mid-flight.
 - [Further reading](#further-reading)
 
 ---
+
+## Screenshots
+
+The dashboard, driven through a real end-to-end run against live Postgres and
+Redis. No mockups — every number on these pages came out of the database.
+
+### Overview
+
+Delivery health across all endpoints, polling every 5 seconds.
+
+![Overview: 168 events, 499 delivered, 5 retrying, 0 dead, 100% success rate, 251ms p95, with deliveries-per-minute, success-rate and p95-latency charts](docs/screenshots/overview.png)
+
+### Event timeline — the page that matters
+
+One event, fanned out to three endpoints, each retrying independently. The
+healthy endpoint succeeded on attempt #1; the always-failing one is showing its
+HTTP 500 body; the flaky one has a live countdown to its next retry. Every row is
+a real attempt with its status code and latency.
+
+![Event detail: three endpoints for one order.created event — one succeeded with HTTP 200, one failed with the endpoint's 500 response body and "next retry due now", one failed with "next retry 1s" — plus the event payload and a Replay button per endpoint](docs/screenshots/event-timeline.png)
+
+### Dead letters
+
+Deliveries that exhausted all eight attempts, with bulk replay.
+
+![Dead letter queue listing dead deliveries with attempt counts and last error, and a bulk replay control](docs/screenshots/dlq.png)
+
+### Endpoints
+
+![Endpoints list showing three registered endpoints with their subscribed event types and active state](docs/screenshots/endpoints.png)
+
+### Endpoint detail — config, secret, health
+
+Reveal and rotate the signing secret; 24-hour success rate; recent deliveries.
+
+![Endpoint detail page showing URL, subscribed event types, the whsec_ signing secret with reveal and rotate controls, 24h success rate and a recent deliveries table](docs/screenshots/endpoint-detail.png)
+
+### Events
+
+![Events list showing published events with type, time and per-event delivery status counts](docs/screenshots/events.png)
 
 ## How it works
 
